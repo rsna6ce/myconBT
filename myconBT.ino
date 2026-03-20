@@ -1,3 +1,4 @@
+#include <esp_system.h>
 #include <stdint.h>
 #include <U8g2lib.h>
 #include <Bluepad32.h>
@@ -5,17 +6,15 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <time.h>
-//#include "FS.h"
-#include "SPIFFSIni.h"
 
-//static char pin_letter[] = {'U','D','L','R', 'A','B','C','D', 'L','l','R','r', 'E','T', '1','2'};
-#define NO_INPUT_WAIT_COUNT_LIMIT 10
+#include "SPIFFSIni.h"
 
 const int pinSW = 0;
 const int pinLED = 2;
 const int pinSTART = 18;
 const int pinSELECT = 19;
 
+// OLED display
 #define WIRE_FREQ 400*1000 /*fast mode*/
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 32
@@ -26,29 +25,30 @@ const int pinSELECT = 19;
 #define SCREEN_LINE(n) ((16*(n))+15)
 U8G2_SSD1306_128X32_UNIVISION_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
+// BT controller
 ControllerPtr myControllers[BP32_MAX_GAMEPADS] = {nullptr};
 
-static uint8_t current_target_mac[6] = {0};
+// ESP-NOW MAC
+uint8_t broadcastAddr[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+uint8_t current_target_mac[6] = {0};
 
-// ペアリングモード関連
-esp_now_peer_info_t broadcastPeer = {};
+// ESP-NOW ペアリングモード関連
 bool pairingMode = false;
 bool pairingScanning = false;
 unsigned long pairingStartTime = 0;
 bool broadcastSent = false;  // ワンショット送信フラグ
 
 const int WIFI_CH = 1;
-#define MAX_PEERS 16
+const int MAX_PEERS = 16;
 uint8_t discoveredPeers[MAX_PEERS][6];
 int peerCount = 0;
 int selectedIndex = 0;
-
-uint8_t broadcastAddr[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 int startPressCount = 0;
 int selectPressCount = 0;
 const int DEBOUNCE_THRESHOLD = 3;  // 連続LOW回数でデバウンス
 
+// BT接続コールバック
 void onConnectedController(ControllerPtr ctl) {
   bool found = false;
   for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
@@ -67,11 +67,13 @@ void onConnectedController(ControllerPtr ctl) {
     const uint8_t* addr = ctl->getProperties().btaddr;
     Serial.printf("MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
                   addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
+    screen_write_line(0, "BT  :" + macToStr(&addr[0]));
   } else {
     Serial.println("接続スロット満杯！");
   }
 }
 
+// BT切断コールバック
 void onDisconnectedController(ControllerPtr ctl) {
   for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
     if (myControllers[i] == ctl) {
@@ -79,11 +81,12 @@ void onDisconnectedController(ControllerPtr ctl) {
       break;
     }
   }
+  screen_write_line(0, "BT  : no device");
   Serial.println("=== コントローラ切断されました！ ===");
 }
 
 // byte → 12文字String
-String macToStr(const uint8_t mac[6]) {
+String macToStr(const uint8_t* mac) {
     char buf[13];
     sprintf(buf, "%02X%02X%02X%02X%02X%02X", 
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -99,28 +102,15 @@ bool strToMac(const String& s, uint8_t mac[6]) {
     return true;
 }
 
+// OLED display
 void screen_write_line(int line, char* msg) {
     String smsg = String(msg);
     screen_write_line(line, smsg);
 }
-
 void screen_write_line(int line, String smsg) {
     String smsg2 = smsg + "               ";
     u8g2.drawStr(0,SCREEN_LINE(line),(smsg2.substring(0, 16)).c_str());
     u8g2.sendBuffer();
-}
-
-int split(String data, char delimiter, String *dst){
-    int index = 0;
-    int datalength = data.length();
-    for (int i = 0; i < datalength; i++) {
-        char tmp = data.charAt(i);
-        if ( tmp == delimiter ) {
-            index++;
-        }
-        else dst[index] += tmp;
-    }
-    return (index + 1);
 }
 
 // 選択中のMACを表示更新
@@ -183,13 +173,14 @@ void setup() {
     if (esp_now_init() != ESP_OK) {
         Serial.println("ESP-NOW init failed");
         screen_write_line(1, "NOW: init ERR");
-        while(1);
+        delay(3*1000);
+        esp_restart();
     }
     esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B);  // 1Mbps固定
     esp_wifi_set_max_tx_power(78);  // 19.5dBm最大
     esp_now_register_recv_cb(OnDataRecv);
 
-  memset(&broadcastPeer, 0, sizeof(broadcastPeer));
+  esp_now_peer_info_t broadcastPeer = {};
   memcpy(broadcastPeer.peer_addr, broadcastAddr, 6);  // FF:FF:FF:FF:FF:FF
   broadcastPeer.channel = 0;
   broadcastPeer.encrypt = false;
@@ -201,6 +192,8 @@ void setup() {
 
     // config読み込み
     SPIFFSIni config("/config.ini", true);
+
+    // latest BT MAC
     bool hasSavedMac = false;
     if (config.exist("current_target_mac")) {
         String macStr = config.read("current_target_mac");
@@ -208,6 +201,14 @@ void setup() {
             hasSavedMac = true;
             screen_write_line(1, "NOW:" + macStr);
             Serial.println("Loaded saved MAC: " + macStr);
+            // Peer登録
+            if (!esp_now_is_peer_exist(current_target_mac)) {
+              esp_now_peer_info_t peerInfo = {};
+              memcpy(peerInfo.peer_addr, current_target_mac, 6);
+              peerInfo.channel = 0; // 自身のチャンネルと合わせる
+              peerInfo.encrypt = false;
+              esp_now_add_peer(&peerInfo);
+            }
         }
     }
 
@@ -223,14 +224,14 @@ void setup() {
         Serial.println("No saved MAC → Auto pairing mode");
     }
 
+    //BT init
     BP32.setup(&onConnectedController, &onDisconnectedController);
     BP32.enableNewBluetoothConnections(true);
-    Serial.println("スキャン開始... 8BitDo SN30 Pro を Y + Start 長押しで起動");
+    Serial.println("スキャン開始... 8BitDo SN30 Pro を B + Start 長押しで起動");
+    screen_write_line(0, "BT  : no device");
 }
 
 void loop() {
-    BP32.update();
-
     bool startPressed = (digitalRead(pinSTART) == LOW);
     bool selectPressed = (digitalRead(pinSELECT) == LOW);
     if (startPressed) startPressCount++; else startPressCount = 0;
@@ -288,6 +289,14 @@ void loop() {
                   config.write("current_target_mac", macToStr(current_target_mac));
                   screen_write_line(1, "NOW:" + macToStr(current_target_mac));
                   Serial.println("Paired & saved: " + macToStr(current_target_mac));
+                  // Peer登録
+                  if (!esp_now_is_peer_exist(current_target_mac)) {
+                    esp_now_peer_info_t peerInfo = {};
+                    memcpy(peerInfo.peer_addr, current_target_mac, 6);
+                    peerInfo.channel = 0; // 自身のチャンネルと合わせる
+                    peerInfo.encrypt = false;
+                    esp_now_add_peer(&peerInfo);
+                  }
               } else {
                   screen_write_line(1, "NOW: canceled");
               }
@@ -297,9 +306,78 @@ void loop() {
         }
     } else {
       // ゲームパッドの入力
-      
-      //ユニキャスト送信
-    }
+      BP32.update();
+      for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
+        if (myControllers[i] != nullptr && myControllers[i]->isConnected()) {
+          digitalWrite(pinLED, HIGH);
+          ControllerPtr ctl = myControllers[i];
 
+          uint16_t buttons = ctl->buttons();          // フェイス + ショルダー (A/B/X/Y/L1/R1)
+          uint8_t dpad = ctl->dpad();                 // D-Pad (ビットマスク: 1=上, 2=下, 4=左, 8=右)
+          uint16_t misc = ctl->miscButtons();         // Misc (SELECT/START/HOME など)
+          int l2 = ctl->brake();                     // L2トリガー (0~1023)
+          int r2 = ctl->throttle();                     // R2トリガー (0~1023)
+
+          // ジョイスティック値取得
+          int lx = ctl->axisX();      // 左スティック X (左右)
+          int ly = ctl->axisY();      // 左スティック Y (上下)
+          int rx = ctl->axisRX();     // 右スティック X
+          int ry = ctl->axisRY();     // 右スティック Y
+
+          char packet[31] = {};
+          int idx = 0;
+
+          // D-Pad (十字キー)
+          if (dpad & 0x01) {packet[idx++]='U';} else {packet[idx++]='_';}
+          if (dpad & 0x02) {packet[idx++]='D';} else {packet[idx++]='_';}
+          if (dpad & 0x08) {packet[idx++]='L';} else {packet[idx++]='_';}
+          if (dpad & 0x04) {packet[idx++]='R';} else {packet[idx++]='_';}
+          // フェイスボタン (ABXY) 
+          if (buttons & 0x0002) {packet[idx++]='A';} else {packet[idx++]='_';}
+          if (buttons & 0x0001) {packet[idx++]='B';} else {packet[idx++]='_';}
+          if (buttons & 0x0008) {packet[idx++]='X';} else {packet[idx++]='_';}
+          if (buttons & 0x0004) {packet[idx++]='Y';} else {packet[idx++]='_';}
+          // L1/L2
+          if (buttons & 0x0010) {packet[idx++]='L';} else {packet[idx++]='_';}
+          if (l2 > 50)          {packet[idx++]='l';} else {packet[idx++]='_';}
+          // R2/R2
+          if (buttons & 0x0020) {packet[idx++]='R';} else {packet[idx++]='_';}
+          if (r2 > 50)          {packet[idx++]='r';} else {packet[idx++]='_';}
+          // Miscボタン (HOME/SELECT/START)
+          //if (misc & 0x01) output += "HOME ";
+          if (misc & 0x02) {packet[idx++]='E';} else {packet[idx++]='_';}
+          if (misc & 0x04) {packet[idx++]='T';} else {packet[idx++]='_';}
+          // ジョイスティック左
+          if (lx < 0) {packet[idx++]='-';} else {packet[idx++]='+';}
+          int abs_lx = abs(lx);
+          packet[idx++] = ((abs_lx % 1000) / 100) | 0x30;
+          packet[idx++] = ((abs_lx %  100) /  10) | 0x30;
+          packet[idx++] = ((abs_lx %   10)      ) | 0x30;
+          if (ly < 0) {packet[idx++]='-';} else {packet[idx++]='+';}
+          int abs_ly = abs(ly);
+          packet[idx++] = ((abs_ly % 1000) / 100) | 0x30;
+          packet[idx++] = ((abs_ly %  100) /  10) | 0x30;
+          packet[idx++] = ((abs_ly %   10)      ) | 0x30;
+          // ジョイスティック右
+          if (rx < 0) {packet[idx++]='-';} else {packet[idx++]='+';}
+          int abs_rx = abs(rx);
+          packet[idx++] = ((abs_rx % 1000) / 100) | 0x30;
+          packet[idx++] = ((abs_rx %  100) /  10) | 0x30;
+          packet[idx++] = ((abs_rx %   10)      ) | 0x30;
+          if (ry < 0) {packet[idx++]='-';} else {packet[idx++]='+';}
+          int abs_ry = abs(ry);
+          packet[idx++] = ((abs_ry % 1000) / 100) | 0x30;
+          packet[idx++] = ((abs_ry %  100) /  10) | 0x30;
+          packet[idx++] = ((abs_ry %   10)      ) | 0x30;
+          // heartbeat
+          packet[idx++] = '_';
+
+          //ユニキャスト送信
+          esp_err_t result = esp_now_send(current_target_mac, (uint8_t*)packet, sizeof(packet));
+          if (result != ESP_OK) Serial.printf("Error: %d\n", result);
+          digitalWrite(pinLED, LOW);
+        }
+      }
+    }
     delay(10);
 }
