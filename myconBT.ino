@@ -74,7 +74,7 @@ void onConnectedController(ControllerPtr ctl) {
     const uint8_t* addr = ctl->getProperties().btaddr;
     Serial.printf("MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
                   addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
-    screen_write_line(0, "BT  :" + macToStr(&addr[0]));
+    screen_write_line(0, "BT :" + macToStr(&addr[0]));
   } else {
     Serial.println("接続スロット満杯！");
   }
@@ -88,7 +88,7 @@ void onDisconnectedController(ControllerPtr ctl) {
       break;
     }
   }
-  screen_write_line(0, "BT  : no device");
+  screen_write_line(0, "BT : no device");
   Serial.println("=== コントローラ切断されました！ ===");
 }
 
@@ -178,7 +178,7 @@ void setup() {
     float voltf = ((float)readv * VOLT) / ANALOG_MAX;
     String volts = String(voltf, 2);
     screen_write_line(0, "Batt. Voltage");
-    screen_write_line(1, volts);
+    screen_write_line(1, volts + " V");
     delay(2*1000);
 
     WiFi.mode(WIFI_STA);
@@ -193,7 +193,7 @@ void setup() {
 
     if (esp_now_init() != ESP_OK) {
         Serial.println("ESP-NOW init failed");
-        screen_write_line(1, "NOW: init ERR");
+        screen_write_line(1, "ESP: init ERR");
         delay(3*1000);
         esp_restart();
     }
@@ -220,7 +220,7 @@ void setup() {
         String macStr = config.read("current_target_mac");
         if (strToMac(macStr, current_target_mac) && macStr.length() == 12) {
             hasSavedMac = true;
-            screen_write_line(1, "NOW:" + macStr);
+            screen_write_line(1, "ESP:" + macStr);
             Serial.println("Loaded saved MAC: " + macStr);
             // Peer登録
             if (!esp_now_is_peer_exist(current_target_mac)) {
@@ -241,7 +241,7 @@ void setup() {
         broadcastSent = false;
         peerCount = 0;
         selectedIndex = 0;
-        screen_write_line(1, "NOW> scan...");
+        screen_write_line(1, "ESP> scan...");
         Serial.println("No saved MAC → Auto pairing mode");
     }
 
@@ -249,7 +249,7 @@ void setup() {
     BP32.setup(&onConnectedController, &onDisconnectedController);
     BP32.enableNewBluetoothConnections(true);
     Serial.println("スキャン開始... 8BitDo SN30 Pro を B + Start 長押しで起動");
-    screen_write_line(0, "BT  : no device");
+    screen_write_line(0, "BT : no device");
 }
 
 void loop() {
@@ -272,7 +272,7 @@ void loop() {
         broadcastSent = false;
         peerCount = 0;
         selectedIndex = 0;
-        screen_write_line(1, "NOW> scan...");
+        screen_write_line(1, "ESP> scan...");
         Serial.println("Pairing mode ON (manual)");
         startPressCount = 0;
     }
@@ -293,7 +293,7 @@ void loop() {
         // 3秒待機後リスト表示モードへ
         if (now - pairingStartTime >= 3000) {
           if (peerCount == 0 && pairingScanning) {
-              screen_write_line(1, "NOW: no device");
+              screen_write_line(1, "ESP: no device");
           } else if (selectedIndex == 0 && pairingScanning) {  // 初回のみ表示更新
               updateSelectedMacDisplay();
           }
@@ -312,7 +312,7 @@ void loop() {
                   memcpy(current_target_mac, discoveredPeers[selectedIndex], 6);
                   SPIFFSIni config("/config.ini", true);
                   config.write("current_target_mac", macToStr(current_target_mac));
-                  screen_write_line(1, "NOW:" + macToStr(current_target_mac));
+                  screen_write_line(1, "ESP:" + macToStr(current_target_mac));
                   Serial.println("Paired & saved: " + macToStr(current_target_mac));
                   // Peer登録
                   if (!esp_now_is_peer_exist(current_target_mac)) {
@@ -323,7 +323,7 @@ void loop() {
                     esp_now_add_peer(&peerInfo);
                   }
               } else {
-                  screen_write_line(1, "NOW: canceled");
+                  screen_write_line(1, "ESP: canceled");
               }
               pairingMode = false;
               startPressCount = 0;
