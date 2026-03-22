@@ -11,8 +11,15 @@
 
 const int pinSW = 0;
 const int pinLED = 2;
-const int pinSTART = 18;
-const int pinSELECT = 19;
+const int pinSTART = 19;
+const int pinSELECT = 18;
+const int pinUP = 25;
+const int pinDOWN = 26;
+const int pinLEFT = 32;
+const int pinRIGHT = 33;
+const int pinVoltage = 34;
+
+const int polling_interval_ms = 20;
 
 // OLED display
 #define WIRE_FREQ 400*1000 /*fast mode*/
@@ -149,6 +156,10 @@ void setup() {
     pinMode(pinSW, INPUT_PULLUP);
     pinMode(pinSTART, INPUT_PULLUP);
     pinMode(pinSELECT, INPUT_PULLUP);
+    pinMode(pinUP, INPUT_PULLUP);
+    pinMode(pinDOWN, INPUT_PULLUP);
+    pinMode(pinLEFT, INPUT_PULLUP);
+    pinMode(pinRIGHT, INPUT_PULLUP);
 
     u8g2.setBusClock(WIRE_FREQ);
     u8g2.begin();
@@ -159,6 +170,16 @@ void setup() {
     screen_write_line(0, "Welcome!!");
     screen_write_line(1, "MyConBT");
     delay(1*1000);
+
+    // Voltage
+    int readv = analogRead(pinVoltage);
+    const float VOLT = 6.6; // 3.3V Resistor Divider 1/2
+    const float ANALOG_MAX = 4096.0;
+    float voltf = ((float)readv * VOLT) / ANALOG_MAX;
+    String volts = String(voltf, 2);
+    screen_write_line(0, "Batt. Voltage");
+    screen_write_line(1, volts);
+    delay(2*1000);
 
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
@@ -234,13 +255,17 @@ void setup() {
 void loop() {
     bool startPressed = (digitalRead(pinSTART) == LOW);
     bool selectPressed = (digitalRead(pinSELECT) == LOW);
+    bool upPressed = (digitalRead(pinUP) == LOW);
+    bool downPressed = (digitalRead(pinDOWN) == LOW);
+    bool leftPressed = (digitalRead(pinLEFT) == LOW);
+    bool rightPressed = (digitalRead(pinRIGHT) == LOW);
     if (startPressed) startPressCount++; else startPressCount = 0;
     if (selectPressed) selectPressCount++; else selectPressCount = 0;
 
     unsigned long now = millis();
 
     // START長押し1.5秒でペアリングモード入場（いつでも再入場可）
-    if (!pairingMode && startPressCount >= 150) {  // 10ms × 150 = 1500ms
+    if (!pairingMode && startPressCount >= (1500/polling_interval_ms)) {
         pairingMode = true;
         pairingScanning = true;
         pairingStartTime = now;
@@ -307,6 +332,7 @@ void loop() {
     } else {
       // ゲームパッドの入力
       BP32.update();
+      bool padOutput = false;
       for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
         if (myControllers[i] != nullptr && myControllers[i]->isConnected()) {
           digitalWrite(pinLED, HIGH);
@@ -327,11 +353,11 @@ void loop() {
           char packet[31] = {};
           int idx = 0;
 
-          // D-Pad (十字キー)
-          if (dpad & 0x01) {packet[idx++]='U';} else {packet[idx++]='_';}
-          if (dpad & 0x02) {packet[idx++]='D';} else {packet[idx++]='_';}
-          if (dpad & 0x08) {packet[idx++]='L';} else {packet[idx++]='_';}
-          if (dpad & 0x04) {packet[idx++]='R';} else {packet[idx++]='_';}
+          // D-Pad (十字キー) + GPIO ボタンで割り込み
+          if ((dpad & 0x01) || upPressed)    {packet[idx++]='U';} else {packet[idx++]='_';}
+          if ((dpad & 0x02) || downPressed)  {packet[idx++]='D';} else {packet[idx++]='_';}
+          if ((dpad & 0x08) || leftPressed)  {packet[idx++]='L';} else {packet[idx++]='_';}
+          if ((dpad & 0x04) || rightPressed) {packet[idx++]='R';} else {packet[idx++]='_';}
           // フェイスボタン (ABXY) 
           if (buttons & 0x0002) {packet[idx++]='A';} else {packet[idx++]='_';}
           if (buttons & 0x0001) {packet[idx++]='B';} else {packet[idx++]='_';}
@@ -376,8 +402,60 @@ void loop() {
           esp_err_t result = esp_now_send(current_target_mac, (uint8_t*)packet, sizeof(packet));
           if (result != ESP_OK) Serial.printf("Error: %d\n", result);
           digitalWrite(pinLED, LOW);
+          padOutput = true;
         }
       }
+      
+      // pad未接続
+      if (!padOutput) {
+          char packet[31] = {};
+          int idx = 0;
+
+          // D-Pad (十字キー) + GPIO ボタンで割り込み
+          if (upPressed)    {packet[idx++]='U';} else {packet[idx++]='_';}
+          if (downPressed)  {packet[idx++]='D';} else {packet[idx++]='_';}
+          if (leftPressed)  {packet[idx++]='L';} else {packet[idx++]='_';}
+          if (rightPressed) {packet[idx++]='R';} else {packet[idx++]='_';}
+          // フェイスボタン (ABXY) 
+          {packet[idx++]='_';}
+          {packet[idx++]='_';}
+          {packet[idx++]='_';}
+          {packet[idx++]='_';}
+          // L1/L2
+          {packet[idx++]='_';}
+          {packet[idx++]='_';}
+          // R2/R2
+          {packet[idx++]='_';}
+          {packet[idx++]='_';}
+          // Miscボタン (HOME/SELECT/START)
+          //if (misc & 0x01) output += "HOME ";
+          {packet[idx++]='_';}
+          {packet[idx++]='_';}
+          // ジョイスティック左
+          {packet[idx++]='+';}
+          {packet[idx++] = '0';}
+          {packet[idx++] = '0';}
+          {packet[idx++] = '0';}
+          {packet[idx++]='+';}
+          {packet[idx++] = '0';}
+          {packet[idx++] = '0';}
+          {packet[idx++] = '0';}
+          // ジョイスティック右
+          {packet[idx++]='+';}
+          {packet[idx++] = '0';}
+          {packet[idx++] = '0';}
+          {packet[idx++] = '0';}
+          {packet[idx++]='+';}
+          {packet[idx++] = '0';}
+          {packet[idx++] = '0';}
+          {packet[idx++] = '0';}
+          // heartbeat
+          packet[idx++] = '_';
+
+          //ユニキャスト送信
+          esp_err_t result = esp_now_send(current_target_mac, (uint8_t*)packet, sizeof(packet));
+          if (result != ESP_OK) Serial.printf("Error: %d\n", result);
+      }
     }
-    delay(10);
+    delay(polling_interval_ms);
 }
