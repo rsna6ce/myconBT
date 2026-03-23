@@ -330,132 +330,113 @@ void loop() {
           }
         }
     } else {
-      // ゲームパッドの入力
-      BP32.update();
-      bool padOutput = false;
-      for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
-        if (myControllers[i] != nullptr && myControllers[i]->isConnected()) {
-          digitalWrite(pinLED, HIGH);
-          ControllerPtr ctl = myControllers[i];
+        // ゲームパッドの入力
+        BP32.update();
 
-          uint16_t buttons = ctl->buttons();          // フェイス + ショルダー (A/B/X/Y/L1/R1)
-          uint8_t dpad = ctl->dpad();                 // D-Pad (ビットマスク: 1=上, 2=下, 4=左, 8=右)
-          uint16_t misc = ctl->miscButtons();         // Misc (SELECT/START/HOME など)
-          int l2 = ctl->brake();                     // L2トリガー (0~1023)
-          int r2 = ctl->throttle();                     // R2トリガー (0~1023)
+        char packet[31] = {
+            '_', '_', '_', '_',     // 0-3   D-Pad: U D L R
+            '_', '_', '_', '_',     // 4-7   ABXY
+            '_', '_',               // 8-9   L (デジタル) l (アナログ)
+            '_', '_',               // 10-11 R (デジタル) r (アナログ)
+            '_', '_',               // 12-13 E (sElect) T (sTart)
+            '+', '0', '0', '0',     // 14-17 左スティック X
+            '+', '0', '0', '0',     // 18-21 左スティック Y
+            '+', '0', '0', '0',     // 22-25 右スティック X
+            '+', '0', '0', '0',     // 26-29 右スティック Y
+            '_'                     // 30    heartbeat
+        };
 
-          // ジョイスティック値取得
-          int lx = ctl->axisX();      // 左スティック X (左右)
-          int ly = ctl->axisY();      // 左スティック Y (上下)
-          int rx = ctl->axisRX();     // 右スティック X
-          int ry = ctl->axisRY();     // 右スティック Y
+        bool anyActive = false;
 
-          char packet[31] = {};
-          int idx = 0;
+        // Bluetoothコントローラーの入力合成（接続されているものだけ）
+        for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
+            if (myControllers[i] == nullptr || !myControllers[i]->isConnected()) {
+                continue;
+            }
 
-          // D-Pad (十字キー) + GPIO ボタンで割り込み
-          if ((dpad & 0x01) || upPressed)    {packet[idx++]='U';} else {packet[idx++]='_';}
-          if ((dpad & 0x02) || downPressed)  {packet[idx++]='D';} else {packet[idx++]='_';}
-          if ((dpad & 0x08) || leftPressed)  {packet[idx++]='L';} else {packet[idx++]='_';}
-          if ((dpad & 0x04) || rightPressed) {packet[idx++]='R';} else {packet[idx++]='_';}
-          // フェイスボタン (ABXY) 
-          if (buttons & 0x0002) {packet[idx++]='A';} else {packet[idx++]='_';}
-          if (buttons & 0x0001) {packet[idx++]='B';} else {packet[idx++]='_';}
-          if (buttons & 0x0008) {packet[idx++]='X';} else {packet[idx++]='_';}
-          if (buttons & 0x0004) {packet[idx++]='Y';} else {packet[idx++]='_';}
-          // L1/L2
-          if (buttons & 0x0010) {packet[idx++]='L';} else {packet[idx++]='_';}
-          if (l2 > 50)          {packet[idx++]='l';} else {packet[idx++]='_';}
-          // R2/R2
-          if (buttons & 0x0020) {packet[idx++]='R';} else {packet[idx++]='_';}
-          if (r2 > 50)          {packet[idx++]='r';} else {packet[idx++]='_';}
-          // Miscボタン (HOME/SELECT/START)
-          //if (misc & 0x01) output += "HOME ";
-          if (misc & 0x02) {packet[idx++]='E';} else {packet[idx++]='_';}
-          if (misc & 0x04) {packet[idx++]='T';} else {packet[idx++]='_';}
-          // ジョイスティック左
-          if (lx < 0) {packet[idx++]='-';} else {packet[idx++]='+';}
-          int abs_lx = abs(lx);
-          packet[idx++] = ((abs_lx % 1000) / 100) | 0x30;
-          packet[idx++] = ((abs_lx %  100) /  10) | 0x30;
-          packet[idx++] = ((abs_lx %   10)      ) | 0x30;
-          if (ly < 0) {packet[idx++]='-';} else {packet[idx++]='+';}
-          int abs_ly = abs(ly);
-          packet[idx++] = ((abs_ly % 1000) / 100) | 0x30;
-          packet[idx++] = ((abs_ly %  100) /  10) | 0x30;
-          packet[idx++] = ((abs_ly %   10)      ) | 0x30;
-          // ジョイスティック右
-          if (rx < 0) {packet[idx++]='-';} else {packet[idx++]='+';}
-          int abs_rx = abs(rx);
-          packet[idx++] = ((abs_rx % 1000) / 100) | 0x30;
-          packet[idx++] = ((abs_rx %  100) /  10) | 0x30;
-          packet[idx++] = ((abs_rx %   10)      ) | 0x30;
-          if (ry < 0) {packet[idx++]='-';} else {packet[idx++]='+';}
-          int abs_ry = abs(ry);
-          packet[idx++] = ((abs_ry % 1000) / 100) | 0x30;
-          packet[idx++] = ((abs_ry %  100) /  10) | 0x30;
-          packet[idx++] = ((abs_ry %   10)      ) | 0x30;
-          // heartbeat
-          packet[idx++] = '_';
+            anyActive = true;
+            ControllerPtr ctl = myControllers[i];
 
-          //ユニキャスト送信
-          esp_err_t result = esp_now_send(current_target_mac, (uint8_t*)packet, sizeof(packet));
-          if (result != ESP_OK) Serial.printf("Error: %d\n", result);
-          digitalWrite(pinLED, LOW);
-          padOutput = true;
+          	uint16_t buttons = ctl->buttons();          // フェイス + ショルダー (A/B/X/Y/L1/R1)
+          	uint8_t dpad = ctl->dpad();                 // D-Pad (ビットマスク: 1=上, 2=下, 4=左, 8=右)
+          	uint16_t misc = ctl->miscButtons();         // Misc (SELECT/START/HOME など)
+          	int l2 = ctl->brake();                     // L2トリガー (0~1023)
+          	int r2 = ctl->throttle();                     // R2トリガー (0~1023)
+
+          	// ジョイスティック値取得
+            int lx = ctl->axisX();
+            int ly = ctl->axisY();
+            int rx = ctl->axisRX();
+            int ry = ctl->axisRY();
+
+            // BTのD-Pad（ここはBT接続時のみ）
+            if (dpad & 0x01) packet[0] = 'U';
+            if (dpad & 0x02) packet[1] = 'D';
+            if (dpad & 0x08) packet[2] = 'L';
+            if (dpad & 0x04) packet[3] = 'R';
+
+            // ABXY
+            if (buttons & 0x0002) packet[4] = 'A';
+            if (buttons & 0x0001) packet[5] = 'B';
+            if (buttons & 0x0008) packet[6] = 'X';
+            if (buttons & 0x0004) packet[7] = 'Y';
+
+            // L1 L2
+            if (buttons & 0x0010) packet[8]  = 'L';
+            if (l2 > 50)          packet[9]  = 'l';
+
+            // R1 R2
+            if (buttons & 0x0020) packet[10] = 'R';
+            if (r2 > 50)          packet[11] = 'r';
+
+            // E T
+            if (misc & 0x02) packet[12] = 'E';
+            if (misc & 0x04) packet[13] = 'T';
+
+            // ジョイスティック（非ゼロなら上書き）
+            if (lx != 0) {
+                packet[14] = (lx < 0) ? '-' : '+';
+                int absv = abs(lx);
+                packet[15] = ((absv / 100) % 10) + '0';
+                packet[16] = ((absv / 10)  % 10) + '0';
+                packet[17] = (absv % 10)         + '0';
+            }
+            if (ly != 0) {
+                packet[18] = (ly < 0) ? '-' : '+';
+                int absv = abs(ly);
+                packet[19] = ((absv / 100) % 10) + '0';
+                packet[20] = ((absv / 10)  % 10) + '0';
+                packet[21] = (absv % 10)         + '0';
+            }
+            if (rx != 0) {
+                packet[22] = (rx < 0) ? '-' : '+';
+                int absv = abs(rx);
+                packet[23] = ((absv / 100) % 10) + '0';
+                packet[24] = ((absv / 10)  % 10) + '0';
+                packet[25] = (absv % 10)         + '0';
+            }
+            if (ry != 0) {
+                packet[26] = (ry < 0) ? '-' : '+';
+                int absv = abs(ry);
+                packet[27] = ((absv / 100) % 10) + '0';
+                packet[28] = ((absv / 10)  % 10) + '0';
+                packet[29] = (absv % 10)         + '0';
+            }
         }
-      }
-      
-      // pad未接続
-      if (!padOutput) {
-          char packet[31] = {};
-          int idx = 0;
 
-          // D-Pad (十字キー) + GPIO ボタンで割り込み
-          if (upPressed)    {packet[idx++]='U';} else {packet[idx++]='_';}
-          if (downPressed)  {packet[idx++]='D';} else {packet[idx++]='_';}
-          if (leftPressed)  {packet[idx++]='L';} else {packet[idx++]='_';}
-          if (rightPressed) {packet[idx++]='R';} else {packet[idx++]='_';}
-          // フェイスボタン (ABXY) 
-          {packet[idx++]='_';}
-          {packet[idx++]='_';}
-          {packet[idx++]='_';}
-          {packet[idx++]='_';}
-          // L1/L2
-          {packet[idx++]='_';}
-          {packet[idx++]='_';}
-          // R2/R2
-          {packet[idx++]='_';}
-          {packet[idx++]='_';}
-          // Miscボタン (HOME/SELECT/START)
-          //if (misc & 0x01) output += "HOME ";
-          {packet[idx++]='_';}
-          {packet[idx++]='_';}
-          // ジョイスティック左
-          {packet[idx++]='+';}
-          {packet[idx++] = '0';}
-          {packet[idx++] = '0';}
-          {packet[idx++] = '0';}
-          {packet[idx++]='+';}
-          {packet[idx++] = '0';}
-          {packet[idx++] = '0';}
-          {packet[idx++] = '0';}
-          // ジョイスティック右
-          {packet[idx++]='+';}
-          {packet[idx++] = '0';}
-          {packet[idx++] = '0';}
-          {packet[idx++] = '0';}
-          {packet[idx++]='+';}
-          {packet[idx++] = '0';}
-          {packet[idx++] = '0';}
-          {packet[idx++] = '0';}
-          // heartbeat
-          packet[idx++] = '_';
+        if (digitalRead(pinUP)    == LOW) packet[0] = 'U';
+        if (digitalRead(pinDOWN)  == LOW) packet[1] = 'D';
+        if (digitalRead(pinLEFT)  == LOW) packet[2] = 'L';
+        if (digitalRead(pinRIGHT) == LOW) packet[3] = 'R';
 
-          //ユニキャスト送信
-          esp_err_t result = esp_now_send(current_target_mac, (uint8_t*)packet, sizeof(packet));
-          if (result != ESP_OK) Serial.printf("Error: %d\n", result);
-      }
+        // LED: BTコントローラーが1台でも接続されている場合のみ点灯（好みでGPIOも含めてもOK）
+        digitalWrite(pinLED, anyActive ? HIGH : LOW);
+
+        // 常に1回送信（中立 or 合成 or GPIOのみ）
+        esp_err_t result = esp_now_send(current_target_mac, (uint8_t*)packet, 31);
+        if (result != ESP_OK) {
+            Serial.printf("ESP-NOW send error: %d\n", result);
+        }
     }
     delay(polling_interval_ms);
 }
