@@ -19,7 +19,7 @@ const int pinLEFT = 32;
 const int pinRIGHT = 33;
 const int pinVoltage = 34;
 
-const int polling_interval_ms = 20;
+const int polling_interval_ms = 30;
 
 // OLED display
 #define WIRE_FREQ 400*1000 /*fast mode*/
