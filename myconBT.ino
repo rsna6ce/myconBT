@@ -1,7 +1,6 @@
 #include <esp_system.h>
 #include <stdint.h>
 #include <U8g2lib.h>
-#include <Bluepad32.h>
 #include <esp_wifi.h>
 #include <WiFi.h>
 #include <esp_now.h>
@@ -32,9 +31,6 @@ const int polling_interval_ms = 30;
 #define SCREEN_LINE(n) ((16*(n))+15)
 U8G2_SSD1306_128X32_UNIVISION_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
-// BT controller
-ControllerPtr myControllers[BP32_MAX_GAMEPADS] = {nullptr};
-
 // ESP-NOW MAC
 uint8_t broadcastAddr[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 uint8_t current_target_mac[6] = {0};
@@ -54,43 +50,6 @@ int selectedIndex = 0;
 int startPressCount = 0;
 int selectPressCount = 0;
 const int DEBOUNCE_THRESHOLD = 3;  // 連続LOW回数でデバウンス
-
-// BT接続コールバック
-void onConnectedController(ControllerPtr ctl) {
-  bool found = false;
-  for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
-    if (myControllers[i] == nullptr) {
-      myControllers[i] = ctl;
-      found = true;
-      break;
-    }
-  }
-  if (found) {
-    Serial.println("=== コントローラ接続されました！ ===");
-    Serial.print("モデル: ");
-    Serial.println(ctl->getModelName());
-
-    // MACアドレス出力（配列で取得）
-    const uint8_t* addr = ctl->getProperties().btaddr;
-    Serial.printf("MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                  addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
-    screen_write_line(0, "BT :" + macToStr(&addr[0]));
-  } else {
-    Serial.println("接続スロット満杯！");
-  }
-}
-
-// BT切断コールバック
-void onDisconnectedController(ControllerPtr ctl) {
-  for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
-    if (myControllers[i] == ctl) {
-      myControllers[i] = nullptr;
-      break;
-    }
-  }
-  screen_write_line(0, "BT : no device");
-  Serial.println("=== コントローラ切断されました！ ===");
-}
 
 // byte → 12文字String
 String macToStr(const uint8_t* mac) {
@@ -184,7 +143,7 @@ void setup() {
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
     esp_wifi_set_promiscuous(true);              // プロミスキャスモードON
-    esp_wifi_set_channel(WIFI_CH, WIFI_SECOND_CHAN_NONE);  // チャンネル11に固定
+    esp_wifi_set_channel(WIFI_CH, WIFI_SECOND_CHAN_NONE);  // チャンネル1に固定
     delay(50);
     esp_wifi_set_promiscuous(false);             // OFFに戻す（ESP-NOWが正常動作）
     WiFi.channel(WIFI_CH);
@@ -201,20 +160,20 @@ void setup() {
     esp_wifi_set_max_tx_power(78);  // 19.5dBm最大
     esp_now_register_recv_cb(OnDataRecv);
 
-  esp_now_peer_info_t broadcastPeer = {};
-  memcpy(broadcastPeer.peer_addr, broadcastAddr, 6);  // FF:FF:FF:FF:FF:FF
-  broadcastPeer.channel = 0;
-  broadcastPeer.encrypt = false;
-  if (esp_now_add_peer(&broadcastPeer) != ESP_OK) {
-      Serial.println("Broadcast peer add failed on receiver");
-  } else {
-      Serial.println("Broadcast peer registered OK on receiver");
-  }
+    esp_now_peer_info_t broadcastPeer = {};
+    memcpy(broadcastPeer.peer_addr, broadcastAddr, 6);  // FF:FF:FF:FF:FF:FF
+    broadcastPeer.channel = 0;
+    broadcastPeer.encrypt = false;
+    if (esp_now_add_peer(&broadcastPeer) != ESP_OK) {
+        Serial.println("Broadcast peer add failed on receiver");
+    } else {
+        Serial.println("Broadcast peer registered OK on receiver");
+    }
 
     // config読み込み
     SPIFFSIni config("/config.ini", true);
 
-    // latest BT MAC
+    // latest BT MAC → ESP-NOW MAC
     bool hasSavedMac = false;
     if (config.exist("current_target_mac")) {
         String macStr = config.read("current_target_mac");
@@ -226,7 +185,7 @@ void setup() {
             if (!esp_now_is_peer_exist(current_target_mac)) {
               esp_now_peer_info_t peerInfo = {};
               memcpy(peerInfo.peer_addr, current_target_mac, 6);
-              peerInfo.channel = 0; // 自身のチャンネルと合わせる
+              peerInfo.channel = 0;
               peerInfo.encrypt = false;
               esp_now_add_peer(&peerInfo);
             }
@@ -244,12 +203,6 @@ void setup() {
         screen_write_line(1, "ESP> scan...");
         Serial.println("No saved MAC → Auto pairing mode");
     }
-
-    //BT init
-    BP32.setup(&onConnectedController, &onDisconnectedController);
-    BP32.enableNewBluetoothConnections(true);
-    Serial.println("スキャン開始... 8BitDo SN30 Pro を B + Start 長押しで起動");
-    screen_write_line(0, "BT : no device");
 }
 
 void loop() {
@@ -318,7 +271,7 @@ void loop() {
                   if (!esp_now_is_peer_exist(current_target_mac)) {
                     esp_now_peer_info_t peerInfo = {};
                     memcpy(peerInfo.peer_addr, current_target_mac, 6);
-                    peerInfo.channel = 0; // 自身のチャンネルと合わせる
+                    peerInfo.channel = 0;
                     peerInfo.encrypt = false;
                     esp_now_add_peer(&peerInfo);
                   }
@@ -330,9 +283,7 @@ void loop() {
           }
         }
     } else {
-        // ゲームパッドの入力
-        BP32.update();
-
+        // ゲームパッドの入力（物理ボタンのみ）
         char packet[31] = {
             '_', '_', '_', '_',     // 0-3   D-Pad: U D L R
             '_', '_', '_', '_',     // 4-7   ABXY
@@ -346,93 +297,15 @@ void loop() {
             '_'                     // 30    heartbeat
         };
 
-        bool anyActive = false;
-
-        // Bluetoothコントローラーの入力合成（接続されているものだけ）
-        for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
-            if (myControllers[i] == nullptr || !myControllers[i]->isConnected()) {
-                continue;
-            }
-
-            anyActive = true;
-            ControllerPtr ctl = myControllers[i];
-
-          	uint16_t buttons = ctl->buttons();          // フェイス + ショルダー (A/B/X/Y/L1/R1)
-          	uint8_t dpad = ctl->dpad();                 // D-Pad (ビットマスク: 1=上, 2=下, 4=左, 8=右)
-          	uint16_t misc = ctl->miscButtons();         // Misc (SELECT/START/HOME など)
-          	int l2 = ctl->brake();                     // L2トリガー (0~1023)
-          	int r2 = ctl->throttle();                     // R2トリガー (0~1023)
-
-          	// ジョイスティック値取得
-            int lx = ctl->axisX();
-            int ly = ctl->axisY();
-            int rx = ctl->axisRX();
-            int ry = ctl->axisRY();
-
-            // BTのD-Pad（ここはBT接続時のみ）
-            if (dpad & 0x01) packet[0] = 'U';
-            if (dpad & 0x02) packet[1] = 'D';
-            if (dpad & 0x08) packet[2] = 'L';
-            if (dpad & 0x04) packet[3] = 'R';
-
-            // ABXY
-            if (buttons & 0x0002) packet[4] = 'A';
-            if (buttons & 0x0001) packet[5] = 'B';
-            if (buttons & 0x0008) packet[6] = 'X';
-            if (buttons & 0x0004) packet[7] = 'Y';
-
-            // L1 L2
-            if (buttons & 0x0010) packet[8]  = 'L';
-            if (l2 > 50)          packet[9]  = 'l';
-
-            // R1 R2
-            if (buttons & 0x0020) packet[10] = 'R';
-            if (r2 > 50)          packet[11] = 'r';
-
-            // E T
-            if (misc & 0x02) packet[12] = 'E';
-            if (misc & 0x04) packet[13] = 'T';
-
-            // ジョイスティック（非ゼロなら上書き）
-            if (lx != 0) {
-                packet[14] = (lx < 0) ? '-' : '+';
-                int absv = abs(lx);
-                packet[15] = ((absv / 100) % 10) + '0';
-                packet[16] = ((absv / 10)  % 10) + '0';
-                packet[17] = (absv % 10)         + '0';
-            }
-            if (ly != 0) {
-                packet[18] = (ly < 0) ? '-' : '+';
-                int absv = abs(ly);
-                packet[19] = ((absv / 100) % 10) + '0';
-                packet[20] = ((absv / 10)  % 10) + '0';
-                packet[21] = (absv % 10)         + '0';
-            }
-            if (rx != 0) {
-                packet[22] = (rx < 0) ? '-' : '+';
-                int absv = abs(rx);
-                packet[23] = ((absv / 100) % 10) + '0';
-                packet[24] = ((absv / 10)  % 10) + '0';
-                packet[25] = (absv % 10)         + '0';
-            }
-            if (ry != 0) {
-                packet[26] = (ry < 0) ? '-' : '+';
-                int absv = abs(ry);
-                packet[27] = ((absv / 100) % 10) + '0';
-                packet[28] = ((absv / 10)  % 10) + '0';
-                packet[29] = (absv % 10)         + '0';
-            }
-        }
-
         if (digitalRead(pinUP)    == LOW) packet[0] = 'U';
         if (digitalRead(pinDOWN)  == LOW) packet[1] = 'D';
         if (digitalRead(pinLEFT)  == LOW) packet[2] = 'L';
         if (digitalRead(pinRIGHT) == LOW) packet[3] = 'R';
 
-        // LED: BTコントローラーが1台でも接続されている場合のみ点灯（好みでGPIOも含めてもOK）
-        digitalWrite(pinLED, anyActive ? HIGH : LOW);
+        // LEDは常に消灯（BT接続判定がなくなったため）
+        digitalWrite(pinLED, LOW);
 
-        // 常に1回送信（中立 or 合成 or GPIOのみ）
+        // 常に送信
         esp_err_t result = esp_now_send(current_target_mac, (uint8_t*)packet, 31);
         if (result != ESP_OK) {
             Serial.printf("ESP-NOW send error: %d\n", result);
