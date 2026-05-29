@@ -20,7 +20,7 @@ void loop() {
 
   if (receiver.is_paired()) {
     Serial.printf(
-      "U:%d D:%d L:%d R:%d A:%d B:%d X:%d Y:%d L1:%d L2:%d R1:%d R2:%d E:%d T:%d  "
+      "U:%d D:%d L:%d R:%d A:%d B:%d X:%d Y:%d L1:%d L2:%d R1:%d R2:%d E:%d T:%d 1:%d 2:%d  "
       "Joy1:%4d,%4d  Joy2:%4d,%4d\n",
       receiver.is_key_down(key_Upward),
       receiver.is_key_down(key_Downward),
@@ -36,6 +36,8 @@ void loop() {
       receiver.is_key_down(key_R2),
       receiver.is_key_down(key_Select),
       receiver.is_key_down(key_Start),
+      receiver.is_key_down(key_Switch1),
+      receiver.is_key_down(key_Switch2),
       receiver.get_joy1_x(), receiver.get_joy1_y(),
       receiver.get_joy2_x(), receiver.get_joy2_y()
     );

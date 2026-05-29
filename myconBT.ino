@@ -139,6 +139,7 @@ void setup() {
     screen_write_line(0, "Batt. Voltage");
     screen_write_line(1, volts + " V");
     delay(2*1000);
+    screen_write_line(0, "ESP-NOW mode");
 
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
@@ -173,7 +174,7 @@ void setup() {
     // config読み込み
     SPIFFSIni config("/config.ini", true);
 
-    // latest BT MAC → ESP-NOW MAC
+    // latest BT MAC
     bool hasSavedMac = false;
     if (config.exist("current_target_mac")) {
         String macStr = config.read("current_target_mac");
@@ -185,7 +186,7 @@ void setup() {
             if (!esp_now_is_peer_exist(current_target_mac)) {
               esp_now_peer_info_t peerInfo = {};
               memcpy(peerInfo.peer_addr, current_target_mac, 6);
-              peerInfo.channel = 0;
+              peerInfo.channel = 0; // 自身のチャンネルと合わせる
               peerInfo.encrypt = false;
               esp_now_add_peer(&peerInfo);
             }
@@ -233,12 +234,11 @@ void loop() {
     if (pairingMode) {
         // ブロードキャストは入場直後に1回だけ
         if (!broadcastSent) {
-            char packet[32];
-            memset(packet, '_', 30);
-            packet[30] = 'H';
-            packet[31] = '\0';
+            char packet[33];
+            memset(packet, '_', sizeof(packet));
+            packet[32] = 'H';
 
-            esp_now_send(broadcastAddr, (uint8_t*)packet, 31);
+            esp_now_send(broadcastAddr, (uint8_t*)packet, sizeof(packet));
             broadcastSent = true;
             Serial.println("Single broadcast sent");
         }
@@ -271,7 +271,7 @@ void loop() {
                   if (!esp_now_is_peer_exist(current_target_mac)) {
                     esp_now_peer_info_t peerInfo = {};
                     memcpy(peerInfo.peer_addr, current_target_mac, 6);
-                    peerInfo.channel = 0;
+                    peerInfo.channel = 0; // 自身のチャンネルと合わせる
                     peerInfo.encrypt = false;
                     esp_now_add_peer(&peerInfo);
                   }
@@ -283,19 +283,22 @@ void loop() {
           }
         }
     } else {
-        // ゲームパッドの入力（物理ボタンのみ）
-        char packet[31] = {
+        // ゲームパッドの入力
+        char packet[33] = {
             '_', '_', '_', '_',     // 0-3   D-Pad: U D L R
             '_', '_', '_', '_',     // 4-7   ABXY
             '_', '_',               // 8-9   L (デジタル) l (アナログ)
             '_', '_',               // 10-11 R (デジタル) r (アナログ)
             '_', '_',               // 12-13 E (sElect) T (sTart)
-            '+', '0', '0', '0',     // 14-17 左スティック X
-            '+', '0', '0', '0',     // 18-21 左スティック Y
-            '+', '0', '0', '0',     // 22-25 右スティック X
-            '+', '0', '0', '0',     // 26-29 右スティック Y
-            '_'                     // 30    heartbeat
+            '_', '_',               // 14-15 1 (Switch1) 2 (Switch2)   ← 追加
+            '+', '0', '0', '0',     // 16-19 左スティック X
+            '+', '0', '0', '0',     // 20-23 左スティック Y
+            '+', '0', '0', '0',     // 24-27 右スティック X
+            '+', '0', '0', '0',     // 28-31 右スティック Y
+            '_'                     // 32    heartbeat
         };
+
+        bool anyActive = false;   // 元のコードに合わせるため残す（今は使わないが）
 
         if (digitalRead(pinUP)    == LOW) packet[0] = 'U';
         if (digitalRead(pinDOWN)  == LOW) packet[1] = 'D';
@@ -305,8 +308,8 @@ void loop() {
         // LEDは常に消灯（BT接続判定がなくなったため）
         digitalWrite(pinLED, LOW);
 
-        // 常に送信
-        esp_err_t result = esp_now_send(current_target_mac, (uint8_t*)packet, 31);
+        // 常に1回送信（33バイトに変更）
+        esp_err_t result = esp_now_send(current_target_mac, (uint8_t*)packet, sizeof(packet));
         if (result != ESP_OK) {
             Serial.printf("ESP-NOW send error: %d\n", result);
         }

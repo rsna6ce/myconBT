@@ -5,13 +5,13 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 
-#define MYCON_KEY_COUNT     14
+#define MYCON_KEY_COUNT     16
 #define MYCON_RECV_TIMEOUT  500   // ms
 #define MYCON_DEFAULT_CHANNEL 1
 
 // キー対応テーブル（新仕様：C→X, D→Y）
 static const char key_letter[MYCON_KEY_COUNT] = {
-    'U','D','L','R', 'A','B','X','Y', 'L','l','R','r', 'E','T'
+    'U','D','L','R', 'A','B','X','Y', 'L','l','R','r', 'E','T', '1', '2'
 };
 
 // インデックス（UDP版と互換を保ちつつ、C/DをX/Yに変更）
@@ -29,7 +29,9 @@ enum key_index {
     key_R1,
     key_R2,
     key_Select,
-    key_Start
+    key_Start,
+    key_Switch1,
+    key_Switch2
     // key_heartbeat は内部処理で使用（配列外）
 };
 
@@ -153,8 +155,8 @@ private:
         }
 
         // ペアリング要求（ブロードキャスト期待メッセージ）
-        static const char expected[] = "______________________________H"; // 31バイト
-        if (len == 31 && memcmp(data, expected, 31) == 0) {
+        static const char expected[] = "________________________________H"; // 33バイト
+        if (len == 33 && memcmp(data, expected, 33) == 0) {
             memcpy(_peer_mac, mac, 6);
 
             esp_now_peer_info_t peer = {};
@@ -179,8 +181,8 @@ private:
             return;
         }
 
-        // 通常のゲームパッドデータ（期待：14キー + 数値4つ + 'H'）
-        if (len < 25) {
+        // 通常のゲームパッドデータ（期待：16キー + 数値4つ + 'H'）
+        if (len < 27) {
             return; // 不正フォーマット
         }
 
