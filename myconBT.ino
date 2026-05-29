@@ -8,8 +8,11 @@
 
 #include "SPIFFSIni.h"
 
+#define OLDTYPE_HARDWARE
+
 const int pinSW = 0;
 const int pinLED = 2;
+#if !defined(OLDTYPE_HARDWARE)
 const int pinSTART = 19;
 const int pinSELECT = 18;
 const int pinUP = 25;
@@ -17,7 +20,16 @@ const int pinDOWN = 26;
 const int pinLEFT = 32;
 const int pinRIGHT = 33;
 const int pinVoltage = 34;
-
+#else
+// old type hardware mycon
+const int pinSTART = 16;
+const int pinSELECT = 26;
+const int pinUP = 33;
+const int pinDOWN = 12;
+const int pinLEFT = 13;
+const int pinRIGHT = 27;
+const int pinVoltage = 34;
+#endif
 const int polling_interval_ms = 30;
 
 // OLED display
